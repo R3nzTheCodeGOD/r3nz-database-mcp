@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "r3nz-database": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/r3nz-database-mcp-windows-x64.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}

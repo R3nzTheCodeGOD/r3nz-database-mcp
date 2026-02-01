@@ -1,0 +1,25 @@
+{
+  "name": "r3nz-database-tools",
+  "owner": {
+    "name": "R3nzTheCodeGOD",
+    "email": "r3nzthecodegod@gmail.com"
+  },
+  "metadata": {
+    "description": "Database analysis tools for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "r3nz-database-mcp",
+      "source": "./",
+      "description": "AI-powered database analysis for MSSQL and PostgreSQL. Connect, query, and analyze databases using natural language.",
+      "version": "0.1.0",
+      "author": {
+        "name": "R3nzTheCodeGOD"
+      },
+      "repository": "https://github.com/R3nzTheCodeGOD/r3nz-database-mcp",
+      "keywords": ["database", "mssql", "postgresql", "sql", "claude"],
+      "category": "database"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "r3nz-database-mcp",
+  "version": "0.1.0",
+  "description": "AI-powered database analysis for MSSQL and PostgreSQL. Connect, query, and analyze databases using natural language.",
+  "author": {
+    "name": "R3nzTheCodeGOD",
+    "email": "r3nzthecodegod@gmail.com"
+  },
+  "repository": "https://github.com/R3nzTheCodeGOD/r3nz-database-mcp",
+  "homepage": "https://github.com/R3nzTheCodeGOD/r3nz-database-mcp",
+  "license": "MIT",
+  "keywords": ["database", "mssql", "postgresql", "sql", "mcp", "ai", "claude"]
+}

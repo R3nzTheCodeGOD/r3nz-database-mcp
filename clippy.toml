@@ -1,0 +1,31 @@
+# Clippy configuration for r3nz-database-mcp
+# Rust 1.93.0 / Edition 2024
+
+msrv = "1.93.0"
+
+# Complexity thresholds
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+
+# Type size limits
+large-error-threshold = 128
+pass-by-value-size-limit = 256
+
+# Naming
+disallowed-names = ["foo", "bar", "baz", "temp", "tmp"]
+
+# Test behavior - allow these in tests
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-print-in-tests = true
+
+# API stability
+avoid-breaking-exported-api = true
+
+# Disallowed methods
+disallowed-methods = [
+    { path = "std::env::set_current_dir", reason = "Not thread-safe" },
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep in async context" },
+]
