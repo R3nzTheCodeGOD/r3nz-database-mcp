@@ -1,6 +1,6 @@
 [package]
 name = "r3nz-database-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["R3nzTheCodeGOD <r3nzthecodegod@gmail.com>"]
 description = "MCP server for AI-powered database analysis. Connect Claude to MSSQL & PostgreSQL using natural language."
