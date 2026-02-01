@@ -65,8 +65,8 @@ static INJECTION_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)/\*.*\*/").expect("Invalid regex: block comment pattern"),
         Regex::new(r"(?i)UNION\s+ALL\s+SELECT").expect("Invalid regex: UNION ALL SELECT pattern"),
         Regex::new(r"(?i)UNION\s+SELECT").expect("Invalid regex: UNION SELECT pattern"),
-        Regex::new(r"(?i)INTO\s+OUTFILE").expect("Invalid regex: INTO OUTFILE pattern"),
-        Regex::new(r"(?i)INTO\s+DUMPFILE").expect("Invalid regex: INTO DUMPFILE pattern"),
+        Regex::new(r"(?i)\bINTO\s+#{0,2}[a-zA-Z_\[][a-zA-Z0-9_\.\[\]#]*")
+            .expect("Invalid regex: INTO clause pattern"),
         Regex::new(r"(?i)LOAD_FILE\s*\(").expect("Invalid regex: LOAD_FILE pattern"),
         Regex::new(r"(?i)BENCHMARK\s*\(").expect("Invalid regex: BENCHMARK pattern"),
         Regex::new(r"(?i)SLEEP\s*\(").expect("Invalid regex: SLEEP pattern"),
@@ -336,6 +336,54 @@ mod tests {
         assert!(
             validator
                 .validate("SELECT * FROM users WHERE 1=1 --")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_select_into_blocked() {
+        let validator = SqlValidator::new();
+        // SELECT INTO creates new tables - must be blocked
+        assert!(
+            validator
+                .validate("SELECT * INTO NewTable FROM users")
+                .is_err()
+        );
+        assert!(
+            validator
+                .validate("SELECT * INTO dbo.NewTable FROM users")
+                .is_err()
+        );
+        assert!(
+            validator
+                .validate("SELECT * INTO [HackedTable] FROM users")
+                .is_err()
+        );
+        assert!(
+            validator
+                .validate("SELECT id, name INTO backup_table FROM customers")
+                .is_err()
+        );
+        // Case variations
+        assert!(
+            validator
+                .validate("select * into newtable from users")
+                .is_err()
+        );
+        assert!(
+            validator
+                .validate("SELECT * InTo NewTable FROM users")
+                .is_err()
+        );
+        // Temp tables (MSSQL)
+        assert!(
+            validator
+                .validate("SELECT * INTO #TempTable FROM users")
+                .is_err()
+        );
+        assert!(
+            validator
+                .validate("SELECT * INTO ##GlobalTemp FROM users")
                 .is_err()
         );
     }
