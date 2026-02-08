@@ -63,7 +63,10 @@ impl ToolHandler for ExecuteQueryTool {
             description: Some(
                 "Execute a read-only SQL query against the database. \
                 Only SELECT, WITH, and EXPLAIN queries are allowed. \
-                Requires an active database connection."
+                Requires an active database connection. \
+                IMPORTANT: Do NOT use TOP or LIMIT clauses in your SQL query to restrict row count. \
+                Instead, use the 'limit' parameter which handles row limiting automatically \
+                and works across all database backends (MSSQL, PostgreSQL)."
                     .into(),
             ),
             input_schema: serde_json::json!({
@@ -71,11 +74,11 @@ impl ToolHandler for ExecuteQueryTool {
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The SQL query to execute (SELECT only)"
+                        "description": "The SQL query to execute (SELECT only). Do NOT include TOP or LIMIT in the query — use the 'limit' parameter instead."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of rows to return (default: 1000)",
+                        "description": "Maximum number of rows to return (default: 1000). Use this instead of SQL TOP/LIMIT clauses.",
                         "minimum": 1,
                         "maximum": 10000
                     },

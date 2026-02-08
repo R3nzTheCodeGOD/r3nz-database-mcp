@@ -1,6 +1,7 @@
 //! MCP tool definitions and registry.
 
 pub mod connection;
+pub mod export;
 pub mod performance;
 pub mod query;
 pub mod registry;
@@ -9,6 +10,7 @@ pub mod schema;
 pub use connection::{
     ConnectTool, ConnectionInfoTool, DisconnectTool, ListDatabasesTool, SwitchDatabaseTool,
 };
+pub use export::{ExportMultiQueryTool, ExportQueryTool, ExportSchemaTool};
 pub use performance::{
     AnalyzeQueryTool, FindBlockingQueriesTool, GetIndexUsageTool, GetPerformanceStatsTool,
 };
@@ -46,6 +48,19 @@ pub fn create_registry(
     registry.register(ListTablesTool::new(Arc::clone(&connection_manager)));
     registry.register(GetSchemaTool::new(Arc::clone(&connection_manager)));
     registry.register(GetRelationshipsTool::new(Arc::clone(&connection_manager)));
+
+    // Export tools (require connection)
+    registry.register(ExportQueryTool::new(
+        Arc::clone(&connection_manager),
+        validator.clone(),
+        Arc::clone(&rate_limiter),
+    ));
+    registry.register(ExportSchemaTool::new(Arc::clone(&connection_manager)));
+    registry.register(ExportMultiQueryTool::new(
+        Arc::clone(&connection_manager),
+        validator.clone(),
+        Arc::clone(&rate_limiter),
+    ));
 
     // Performance tools (require connection)
     registry.register(AnalyzeQueryTool::new(

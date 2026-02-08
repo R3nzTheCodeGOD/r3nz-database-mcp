@@ -1,6 +1,6 @@
 {
   "name": "r3nz-database-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AI-powered database analysis for MSSQL and PostgreSQL. Connect, query, and analyze databases using natural language.",
   "author": {
     "name": "R3nzTheCodeGOD",

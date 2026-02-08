@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Database analysis tools for Claude Code",
-    "version": "0.1.0"
+    "version": "0.1.2"
   },
   "plugins": [
     {
       "name": "r3nz-database-mcp",
       "source": "./",
       "description": "AI-powered database analysis for MSSQL and PostgreSQL. Connect, query, and analyze databases using natural language.",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "author": {
         "name": "R3nzTheCodeGOD"
       },
