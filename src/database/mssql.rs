@@ -46,6 +46,59 @@ fn validate_identifier(name: &str) -> DbResult<&str> {
     }
 }
 
+/// Map a TDS wire type to the SQL Server type name users know.
+///
+/// Nullable numeric columns arrive as variable-width wire types (`Intn`,
+/// `Floatn`, ...), so the exact declared width is not always recoverable.
+fn column_type_name(t: tiberius::ColumnType) -> &'static str {
+    use tiberius::ColumnType as T;
+
+    match t {
+        T::Null => "null",
+        T::Bit | T::Bitn => "bit",
+        T::Int1 => "tinyint",
+        T::Int2 => "smallint",
+        T::Int4 | T::Intn => "int",
+        T::Int8 => "bigint",
+        T::Float4 => "real",
+        T::Float8 | T::Floatn => "float",
+        T::Money => "money",
+        T::Money4 => "smallmoney",
+        T::Decimaln => "decimal",
+        T::Numericn => "numeric",
+        T::Guid => "uniqueidentifier",
+        T::Datetime | T::Datetime4 | T::Datetimen => "datetime",
+        T::Datetime2 => "datetime2",
+        T::DatetimeOffsetn => "datetimeoffset",
+        T::Daten => "date",
+        T::Timen => "time",
+        T::BigChar => "char",
+        T::BigVarChar => "varchar",
+        T::NChar => "nchar",
+        T::NVarchar => "nvarchar",
+        T::Text => "text",
+        T::NText => "ntext",
+        T::BigBinary => "binary",
+        T::BigVarBin => "varbinary",
+        T::Image => "image",
+        T::Xml => "xml",
+        T::Udt => "udt",
+        T::SSVariant => "sql_variant",
+    }
+}
+
+/// Format raw bytes as an uppercase SQL hex literal (`0x4D65...`).
+fn to_hex_literal(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut s = String::with_capacity(2 + bytes.len() * 2);
+    s.push_str("0x");
+    for b in bytes {
+        let _ = write!(s, "{b:02X}");
+    }
+    s
+}
+
 /// MSSQL database driver.
 pub struct MssqlDriver {
     pool: Pool<ConnectionManager>,
@@ -137,6 +190,179 @@ impl MssqlDriver {
         Err(DatabaseError::PoolExhausted)
     }
 
+    /// Inject `TOP (n)` into a SELECT statement.
+    ///
+    /// Case-insensitive, honors an optional DISTINCT/ALL qualifier (TOP must
+    /// come after it in T-SQL) and leaves the query untouched when it already
+    /// has TOP or does not start with SELECT (e.g. CTEs); those cases are
+    /// limited client-side in `execute_query` instead.
+    fn apply_top(query: &str, n: u32) -> String {
+        let trimmed = query.trim_start();
+        if !Self::starts_with_keyword(trimmed, "SELECT") {
+            return query.to_string();
+        }
+
+        // Skip an optional DISTINCT/ALL qualifier; TOP must come after it.
+        let mut insert_at = 6;
+        let rest = trimmed[6..].trim_start();
+        for kw in ["DISTINCT", "ALL"] {
+            if Self::starts_with_keyword(rest, kw) {
+                insert_at = trimmed.len() - rest.len() + kw.len();
+                break;
+            }
+        }
+
+        // Respect an existing TOP instead of injecting a second one.
+        if Self::starts_with_keyword(trimmed[insert_at..].trim_start(), "TOP") {
+            return query.to_string();
+        }
+
+        format!(
+            "{} TOP ({}) {}",
+            &trimmed[..insert_at],
+            n,
+            trimmed[insert_at..].trim_start()
+        )
+    }
+
+    /// True when `s` starts with the ASCII keyword `kw` (case-insensitive)
+    /// followed by a word boundary.
+    fn starts_with_keyword(s: &str, kw: &str) -> bool {
+        s.get(..kw.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(kw))
+            && s[kw.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+    }
+
+    /// Read a float column from a SHOWPLAN_ALL row, tolerating f32 and f64.
+    fn get_plan_float(row: &TiberiusRow, col: &str) -> Option<f64> {
+        row.try_get::<f64, _>(col)
+            .ok()
+            .flatten()
+            .or_else(|| row.try_get::<f32, _>(col).ok().flatten().map(f64::from))
+    }
+
+    /// Run `query` between a `SET <option> ON`/`OFF` pair on one connection.
+    ///
+    /// The statements go through `simple_query`: tiberius runs parameterized
+    /// queries through sp_executesql, where SET options are scoped to that
+    /// call and reset immediately after it returns. OFF is attempted on every
+    /// path so a plan-mode connection can never travel back into the pool.
+    async fn run_with_session_option(
+        &self,
+        option: &str,
+        query: &str,
+    ) -> DbResult<Vec<Vec<TiberiusRow>>> {
+        let mut conn = self.get_connection().await?;
+
+        Self::collect_simple_query(&mut conn, format!("SET {option} ON")).await?;
+
+        // OFF must run even when the query fails, so the outcome is inspected
+        // only after the session is restored.
+        let plan_result = Self::collect_simple_query(&mut conn, query.to_string()).await;
+        let off_result = Self::collect_simple_query(&mut conn, format!("SET {option} OFF")).await;
+
+        let result_sets = plan_result?;
+        off_result?;
+        Ok(result_sets)
+    }
+
+    /// Run one raw batch on the connection and collect every result set.
+    async fn collect_simple_query(
+        conn: &mut bb8::PooledConnection<'_, ConnectionManager>,
+        sql: String,
+    ) -> DbResult<Vec<Vec<TiberiusRow>>> {
+        conn.simple_query(sql)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?
+            .into_results()
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))
+    }
+
+    /// Build an `ExecutionPlan` from SHOWPLAN_ALL or STATISTICS PROFILE rows.
+    ///
+    /// Both modes share the same tabular layout; STATISTICS PROFILE prefixes
+    /// actual `Rows`/`Executes` columns and interleaves the query's own result
+    /// sets, which are skipped here because they carry no `StmtText` column.
+    fn parse_plan_rows(result_sets: &[Vec<TiberiusRow>], actual: bool) -> ExecutionPlan {
+        let mut plan_text = String::new();
+        let mut operations = Vec::new();
+        let mut estimated_cost = None;
+        let mut estimated_rows = None;
+        let mut actual_rows = None;
+        let mut warnings: Vec<String> = Vec::new();
+        let mut statement_seen = false;
+
+        for result_set in result_sets {
+            for row in result_set {
+                let Some(stmt) = row.try_get::<&str, _>("StmtText").ok().flatten() else {
+                    continue;
+                };
+                plan_text.push_str(stmt);
+                plan_text.push('\n');
+
+                let cost = Self::get_plan_float(row, "TotalSubtreeCost");
+                let rows_est = Self::get_plan_float(row, "EstimateRows").map(|r| r.round() as i64);
+                let rows_act = if actual {
+                    row.try_get::<i64, _>("Rows").ok().flatten()
+                } else {
+                    None
+                };
+
+                // The first row is the statement itself and carries the whole
+                // plan's cost; the remaining rows are operator nodes.
+                if !statement_seen {
+                    statement_seen = true;
+                    estimated_cost = cost;
+                    estimated_rows = rows_est;
+                    actual_rows = rows_act;
+                    continue;
+                }
+
+                let operation = row
+                    .try_get::<&str, _>("PhysicalOp")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(stmt)
+                    .trim();
+                operations.push(PlanOperation {
+                    operation: operation.to_string(),
+                    object: None,
+                    estimated_cost: cost,
+                    estimated_rows: rows_est,
+                    actual_rows: rows_act,
+                    details: row
+                        .try_get::<&str, _>("Argument")
+                        .ok()
+                        .flatten()
+                        .map(|s| s.trim().to_string()),
+                });
+
+                if let Some(w) = row.try_get::<&str, _>("Warnings").ok().flatten()
+                    && !w.trim().is_empty()
+                {
+                    warnings.push(format!("{}: {}", operation, w.trim()));
+                }
+            }
+        }
+
+        ExecutionPlan {
+            plan_text,
+            estimated_cost,
+            estimated_rows,
+            actual_rows,
+            operations,
+            warnings: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings)
+            },
+        }
+    }
+
     /// Convert Tiberius row to our Row type.
     fn convert_row(tiberius_row: &TiberiusRow, columns: &[Column]) -> Row {
         let mut row = HashMap::new();
@@ -148,8 +374,13 @@ impl MssqlDriver {
     }
 
     /// Extract cell value from Tiberius row.
+    ///
+    /// Tiberius maps every SQL Server type to exactly one Rust type, so each
+    /// type the server can send must be tried here explicitly; an unmatched
+    /// type would silently come back as NULL.
     fn get_cell_value(row: &TiberiusRow, index: usize) -> CellValue {
-        // Try different types
+        // Probes run in rough frequency order: every miss costs one enum
+        // variant check per cell, so the common types come first.
         if let Some(val) = row.try_get::<i32, _>(index).ok().flatten() {
             return CellValue::Int(val as i64);
         }
@@ -175,12 +406,49 @@ impl MssqlDriver {
         {
             return CellValue::Decimal(val);
         }
+        if let Some(val) = row.try_get::<u8, _>(index).ok().flatten() {
+            // tinyint
+            return CellValue::Int(val as i64);
+        }
+        if let Some(val) = row.try_get::<i16, _>(index).ok().flatten() {
+            // smallint
+            return CellValue::Int(val as i64);
+        }
+        if let Some(val) = row.try_get::<uuid::Uuid, _>(index).ok().flatten() {
+            // uniqueidentifier
+            return CellValue::String(val.to_string());
+        }
+        // NaiveDateTime must be tried before DateTime<Utc>: both match
+        // datetime2, but only DateTime<Utc> matches datetimeoffset.
         if let Some(val) = row
             .try_get::<chrono::NaiveDateTime, _>(index)
             .ok()
             .flatten()
         {
             return CellValue::DateTime(DateTime::from_naive_utc_and_offset(val, Utc));
+        }
+        if let Some(val) = row.try_get::<DateTime<Utc>, _>(index).ok().flatten() {
+            // datetimeoffset (normalized to UTC)
+            return CellValue::DateTime(val);
+        }
+        if let Some(val) = row.try_get::<chrono::NaiveDate, _>(index).ok().flatten() {
+            // date
+            return CellValue::String(val.format("%Y-%m-%d").to_string());
+        }
+        if let Some(val) = row.try_get::<chrono::NaiveTime, _>(index).ok().flatten() {
+            // time
+            return CellValue::String(val.format("%H:%M:%S%.f").to_string());
+        }
+        if let Some(val) = row.try_get::<&[u8], _>(index).ok().flatten() {
+            // binary / varbinary, rendered as a SQL hex literal
+            return CellValue::String(to_hex_literal(val));
+        }
+        if let Some(val) = row
+            .try_get::<&tiberius::xml::XmlData, _>(index)
+            .ok()
+            .flatten()
+        {
+            return CellValue::String(val.as_ref().to_string());
         }
 
         CellValue::Null
@@ -193,6 +461,10 @@ impl DatabaseDriver for MssqlDriver {
         "mssql"
     }
 
+    fn quote_qualified(&self, schema: &str, table: &str) -> String {
+        format!("[{schema}].[{table}]")
+    }
+
     async fn is_connected(&self) -> bool {
         self.pool.state().connections > 0
     }
@@ -202,15 +474,11 @@ impl DatabaseDriver for MssqlDriver {
         let start = Instant::now();
         let mut conn = self.get_connection().await?;
 
-        // Add TOP clause if limit is specified and query is SELECT
-        let modified_query = if let Some(limit) = limit {
-            if query.trim().to_uppercase().starts_with("SELECT") {
-                query.replacen("SELECT", &format!("SELECT TOP {}", limit), 1)
-            } else {
-                query.to_string()
-            }
-        } else {
-            query.to_string()
+        // Fetch one row beyond the limit so truncation can be detected reliably;
+        // the extra row is dropped below before returning.
+        let modified_query = match limit {
+            Some(l) => Self::apply_top(query, l.saturating_add(1)),
+            None => query.to_string(),
         };
 
         debug!("Executing query: {}", modified_query);
@@ -242,19 +510,24 @@ impl DatabaseDriver for MssqlDriver {
                         .iter()
                         .map(|c| Column {
                             name: c.name().to_string(),
-                            data_type: format!("{:?}", c.column_type()),
+                            data_type: column_type_name(c.column_type()).to_string(),
                             nullable: None, // Tiberius doesn't expose nullable info directly
                         })
                         .collect()
                 })
                 .unwrap_or_default();
 
-            let result_rows: Vec<Row> = rows
+            let mut result_rows: Vec<Row> = rows
                 .iter()
                 .map(|r| Self::convert_row(r, &columns))
                 .collect();
 
-            let truncated = limit.map(|l| result_rows.len() >= l as usize);
+            let truncated = limit.map(|l| {
+                let l = l as usize;
+                let over = result_rows.len() > l;
+                result_rows.truncate(l);
+                over
+            });
 
             return Ok(QueryResult {
                 columns,
@@ -457,7 +730,9 @@ impl DatabaseDriver for MssqlDriver {
             None
         };
 
-        // Get indexes
+        // Get indexes. Column names are aggregated with FOR XML PATH instead of
+        // STRING_AGG so this also works on databases with compatibility level
+        // below 140 (SQL Server 2017), still common in the field.
         let index_query = format!(
             r#"
             SELECT
@@ -465,12 +740,17 @@ impl DatabaseDriver for MssqlDriver {
                 i.is_unique,
                 i.is_primary_key,
                 i.type_desc,
-                STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                STUFF((
+                    SELECT ', ' + c.name
+                    FROM sys.index_columns ic
+                    INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                    WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                    ORDER BY ic.key_ordinal
+                    FOR XML PATH(''), TYPE
+                ).value('.', 'nvarchar(max)'), 1, 2, '') AS columns
             FROM sys.indexes i
-            INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-            INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
             WHERE i.object_id = OBJECT_ID('{}.{}')
-            GROUP BY i.name, i.is_unique, i.is_primary_key, i.type_desc
+              AND i.name IS NOT NULL
             "#,
             schema, table
         );
@@ -614,58 +894,15 @@ impl DatabaseDriver for MssqlDriver {
 
     #[instrument(skip(self))]
     async fn get_execution_plan(&self, query: &str) -> DbResult<ExecutionPlan> {
-        let mut conn = self.get_connection().await?;
+        let result_sets = self.run_with_session_option("SHOWPLAN_ALL", query).await?;
+        Ok(Self::parse_plan_rows(&result_sets, false))
+    }
 
-        // Enable showplan
-        conn.execute("SET SHOWPLAN_TEXT ON", &[])
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let stream = conn
-            .query(query, &[])
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let rows = stream
-            .into_results()
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        // Disable showplan
-        conn.execute("SET SHOWPLAN_TEXT OFF", &[])
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let mut plan_text = String::new();
-        let mut operations = Vec::new();
-
-        for result_set in rows {
-            for row in result_set {
-                if let Some(text) = row.try_get::<&str, _>(0).ok().flatten() {
-                    plan_text.push_str(text);
-                    plan_text.push('\n');
-
-                    // Parse basic operation
-                    if text.contains("--") {
-                        operations.push(PlanOperation {
-                            operation: text.trim().to_string(),
-                            object: None,
-                            estimated_cost: None,
-                            estimated_rows: None,
-                            details: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(ExecutionPlan {
-            plan_text,
-            estimated_cost: None,
-            estimated_rows: None,
-            operations,
-            warnings: None,
-        })
+    async fn get_execution_plan_actual(&self, query: &str) -> DbResult<ExecutionPlan> {
+        let result_sets = self
+            .run_with_session_option("STATISTICS PROFILE", query)
+            .await?;
+        Ok(Self::parse_plan_rows(&result_sets, true))
     }
 
     #[instrument(skip(self))]
@@ -686,6 +923,10 @@ impl DatabaseDriver for MssqlDriver {
             FROM sys.dm_exec_query_stats qs
             CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
             WHERE qt.text IS NOT NULL
+              AND qt.text NOT LIKE '%sys.dm[_]%'
+              AND qt.text NOT LIKE '%INFORMATION[_]SCHEMA%'
+              AND qt.text NOT LIKE '%sys.indexes%'
+              AND qt.text NOT LIKE '%sys.tables%'
             ORDER BY qs.total_elapsed_time DESC
         "#;
 
@@ -774,6 +1015,17 @@ impl DatabaseDriver for MssqlDriver {
             WHERE wait_type NOT LIKE '%SLEEP%'
             AND wait_type NOT LIKE '%IDLE%'
             AND wait_type NOT LIKE '%QUEUE%'
+            AND wait_type NOT LIKE 'XE[_]%'
+            AND wait_type NOT LIKE 'BROKER[_]%'
+            AND wait_type NOT LIKE 'HADR[_]%'
+            AND wait_type NOT LIKE 'QDS[_]%'
+            AND wait_type NOT LIKE 'CLR[_]%'
+            AND wait_type NOT LIKE 'WAIT[_]XTP[_]%'
+            AND wait_type NOT IN (
+                'SOS_WORK_DISPATCHER', 'DIRTY_PAGE_POLL', 'REQUEST_FOR_DEADLOCK_SEARCH',
+                'SQLTRACE_INCREMENTAL_FLUSH_SLEEP', 'SP_SERVER_DIAGNOSTICS_SLEEP',
+                'FT_IFTS_SCHEDULER_IDLE_WAIT', 'LOGMGR_QUEUE', 'CHECKPOINT_QUEUE'
+            )
             AND wait_time_ms > 0
             ORDER BY wait_time_ms DESC
         "#;
@@ -813,12 +1065,43 @@ impl DatabaseDriver for MssqlDriver {
             }
         }
 
+        // Buffer cache metrics; tolerated on failure so a missing permission
+        // does not take down the whole stats call.
+        let cache_query = r#"
+            SELECT
+                CAST(a.cntr_value AS float) / NULLIF(CAST(b.cntr_value AS float), 0) * 100.0 AS cache_hit_ratio,
+                CAST(c.cntr_value AS float) * 8.0 / 1024.0 AS buffer_pool_size_mb
+            FROM sys.dm_os_performance_counters a
+            CROSS JOIN sys.dm_os_performance_counters b
+            CROSS JOIN sys.dm_os_performance_counters c
+            WHERE a.counter_name = 'Buffer cache hit ratio'
+              AND a.object_name LIKE '%Buffer Manager%'
+              AND b.counter_name = 'Buffer cache hit ratio base'
+              AND b.object_name LIKE '%Buffer Manager%'
+              AND c.counter_name = 'Database pages'
+              AND c.object_name LIKE '%Buffer Manager%'
+        "#;
+
+        let cache_stats = if let Ok(stream) = conn.query(cache_query, &[]).await
+            && let Ok(rows_result) = stream.into_results().await
+            && let Some(row) = rows_result.first().and_then(|rows| rows.first())
+            && let Some(hit_ratio) = Self::get_plan_float(row, "cache_hit_ratio")
+        {
+            Some(CacheStats {
+                cache_hit_ratio: hit_ratio,
+                buffer_pool_size_mb: Self::get_plan_float(row, "buffer_pool_size_mb")
+                    .unwrap_or(0.0),
+            })
+        } else {
+            None
+        };
+
         debug!("Performance stats collected in {:?}", start.elapsed());
 
         Ok(PerformanceStats {
             top_queries,
             wait_stats: Some(wait_stats),
-            cache_stats: None,
+            cache_stats,
         })
     }
 
@@ -975,6 +1258,63 @@ impl DatabaseDriver for MssqlDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_apply_top_basic() {
+        assert_eq!(
+            MssqlDriver::apply_top("SELECT * FROM Tickets", 11),
+            "SELECT TOP (11) * FROM Tickets"
+        );
+        // Case-insensitive: lowercase select must also get a limit
+        assert_eq!(
+            MssqlDriver::apply_top("select Id from Tickets", 5),
+            "select TOP (5) Id from Tickets"
+        );
+    }
+
+    #[test]
+    fn test_apply_top_distinct_ordering() {
+        // TOP must come after DISTINCT in T-SQL
+        assert_eq!(
+            MssqlDriver::apply_top("SELECT DISTINCT Name FROM Tickets", 3),
+            "SELECT DISTINCT TOP (3) Name FROM Tickets"
+        );
+        // DISTINCTROW-like identifiers must not be treated as the keyword
+        assert_eq!(
+            MssqlDriver::apply_top("SELECT DistinctCount FROM T", 3),
+            "SELECT TOP (3) DistinctCount FROM T"
+        );
+    }
+
+    #[test]
+    fn test_apply_top_untouched_cases() {
+        // Existing TOP is respected
+        assert_eq!(
+            MssqlDriver::apply_top("SELECT TOP 5 * FROM T", 99),
+            "SELECT TOP 5 * FROM T"
+        );
+        assert_eq!(
+            MssqlDriver::apply_top("SELECT TOP(5) * FROM T", 99),
+            "SELECT TOP(5) * FROM T"
+        );
+        // Non-SELECT statements (CTEs) are limited client-side instead
+        assert_eq!(
+            MssqlDriver::apply_top("WITH x AS (SELECT 1 AS a) SELECT a FROM x", 5),
+            "WITH x AS (SELECT 1 AS a) SELECT a FROM x"
+        );
+        // "SELECTX" is not SELECT
+        assert_eq!(
+            MssqlDriver::apply_top("SELECTX FROM T", 5),
+            "SELECTX FROM T"
+        );
+    }
+
+    #[test]
+    fn test_to_hex_literal() {
+        assert_eq!(to_hex_literal(b"Hello"), "0x48656C6C6F");
+        assert_eq!(to_hex_literal(&[]), "0x");
+        assert_eq!(to_hex_literal(&[0x00, 0xFF]), "0x00FF");
+    }
 
     #[test]
     fn test_validate_identifier_valid() {

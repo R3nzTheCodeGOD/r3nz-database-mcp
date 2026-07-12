@@ -162,6 +162,10 @@ impl DatabaseDriver for PostgresDriver {
         "postgres"
     }
 
+    fn quote_qualified(&self, schema: &str, table: &str) -> String {
+        format!("\"{schema}\".\"{table}\"")
+    }
+
     async fn is_connected(&self) -> bool {
         self.pool.status().available > 0 || self.pool.get().await.is_ok()
     }
@@ -617,6 +621,7 @@ impl DatabaseDriver for PostgresDriver {
                         object: None,
                         estimated_cost: None,
                         estimated_rows: None,
+                        actual_rows: None,
                         details: None,
                     });
                 } else if let Some(stripped) = trimmed.strip_prefix("->") {
@@ -625,6 +630,7 @@ impl DatabaseDriver for PostgresDriver {
                         object: None,
                         estimated_cost: None,
                         estimated_rows: None,
+                        actual_rows: None,
                         details: None,
                     });
                 }
@@ -635,6 +641,7 @@ impl DatabaseDriver for PostgresDriver {
             plan_text,
             estimated_cost,
             estimated_rows,
+            actual_rows: None,
             operations,
             warnings: None,
         })

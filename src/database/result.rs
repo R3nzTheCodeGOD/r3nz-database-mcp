@@ -249,6 +249,10 @@ pub struct ExecutionPlan {
     pub estimated_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_rows: Option<i64>,
+    /// Real row count, only present when the plan was collected by actually
+    /// executing the query (analyze_query with `actual: true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_rows: Option<i64>,
     pub operations: Vec<PlanOperation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
@@ -264,6 +268,8 @@ pub struct PlanOperation {
     pub estimated_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_rows: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_rows: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
 }

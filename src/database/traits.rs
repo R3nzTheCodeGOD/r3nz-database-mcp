@@ -17,6 +17,11 @@ pub trait DatabaseDriver: Send + Sync {
     /// Returns the driver name (e.g., "mssql", "postgres").
     fn name(&self) -> &'static str;
 
+    /// Quote a schema-qualified table name in this backend's identifier
+    /// syntax (e.g. `[dbo].[Tickets]` for MSSQL, `"public"."users"` for
+    /// PostgreSQL). Inputs must already be validated identifiers.
+    fn quote_qualified(&self, schema: &str, table: &str) -> String;
+
     /// Checks if the driver has active connections in the pool.
     ///
     /// Note: This only checks pool state, not actual database connectivity.
@@ -77,6 +82,19 @@ pub trait DatabaseDriver: Send + Sync {
     ///
     /// Useful for query optimization and performance analysis.
     async fn get_execution_plan(&self, query: &str) -> DbResult<ExecutionPlan>;
+
+    /// Gets the execution plan WITH actual runtime statistics.
+    ///
+    /// Unlike [`get_execution_plan`](Self::get_execution_plan), this executes
+    /// the query, so estimated and actual row counts can be compared.
+    /// Backends without an implementation report it as unsupported.
+    async fn get_execution_plan_actual(&self, query: &str) -> DbResult<ExecutionPlan> {
+        let _ = query;
+        Err(crate::error::DatabaseError::QueryFailed(format!(
+            "actual execution statistics are not supported for the {} backend yet",
+            self.name()
+        )))
+    }
 
     /// Gets database-wide performance statistics.
     ///
