@@ -22,8 +22,8 @@ impl Default for PoolConfig {
             max_size: 10,
             min_idle: 1,
             connection_timeout: Duration::from_secs(30),
-            idle_timeout: Some(Duration::from_secs(600)),
-            max_lifetime: Some(Duration::from_secs(1800)),
+            idle_timeout: Some(Duration::from_mins(10)),
+            max_lifetime: Some(Duration::from_mins(30)),
         }
     }
 }

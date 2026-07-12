@@ -131,7 +131,7 @@ impl SchemaCache {
 
 impl Default for SchemaCache {
     fn default() -> Self {
-        Self::new(Duration::from_secs(300)) // 5 minutes default TTL
+        Self::new(Duration::from_mins(5))
     }
 }
 

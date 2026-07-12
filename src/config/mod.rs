@@ -77,7 +77,7 @@ impl Default for DatabaseConfig {
             trust_cert: true,
             pool_size: 20,
             connection_timeout: Duration::from_secs(30),
-            query_timeout: Duration::from_secs(60),
+            query_timeout: Duration::from_mins(1),
         }
     }
 }

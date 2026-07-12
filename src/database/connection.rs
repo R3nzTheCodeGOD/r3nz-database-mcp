@@ -205,7 +205,7 @@ impl ConnectionManager {
             trust_cert: true,
             pool_size: 20,
             connection_timeout: std::time::Duration::from_secs(30),
-            query_timeout: std::time::Duration::from_secs(60),
+            query_timeout: std::time::Duration::from_mins(1),
         };
 
         // Connect to new database (this handles disconnect)

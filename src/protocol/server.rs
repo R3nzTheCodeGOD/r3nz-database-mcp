@@ -140,16 +140,12 @@ impl<H: Handler> McpServer<H> {
     async fn update_state_for_method(&self, method: &str) {
         let mut state = self.state.write().await;
         match method {
-            "initialize" => {
-                if *state == ServerState::Created {
-                    *state = ServerState::Initializing;
-                }
+            "initialize" if *state == ServerState::Created => {
+                *state = ServerState::Initializing;
             }
-            "initialized" => {
-                if *state == ServerState::Initializing {
-                    *state = ServerState::Running;
-                    info!("Server initialized and running");
-                }
+            "initialized" if *state == ServerState::Initializing => {
+                *state = ServerState::Running;
+                info!("Server initialized and running");
             }
             "shutdown" => {
                 *state = ServerState::ShuttingDown;
