@@ -135,7 +135,14 @@ impl ToolHandler for ExecuteQueryTool {
 
         // Format result
         let output = QueryOutput {
-            columns: result.columns.iter().map(|c| c.name.clone()).collect(),
+            columns: result
+                .columns
+                .iter()
+                .map(|c| ColumnMeta {
+                    name: c.name.clone(),
+                    data_type: c.data_type.clone(),
+                })
+                .collect(),
             rows: result.rows,
             row_count: result.row_count,
             execution_time_ms: result.execution_time_ms,
@@ -147,8 +154,15 @@ impl ToolHandler for ExecuteQueryTool {
 }
 
 #[derive(Debug, Serialize)]
+struct ColumnMeta {
+    name: String,
+    #[serde(rename = "type")]
+    data_type: String,
+}
+
+#[derive(Debug, Serialize)]
 struct QueryOutput {
-    columns: Vec<String>,
+    columns: Vec<ColumnMeta>,
     rows: Vec<std::collections::HashMap<String, crate::database::CellValue>>,
     row_count: usize,
     execution_time_ms: u64,

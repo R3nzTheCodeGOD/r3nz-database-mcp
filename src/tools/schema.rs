@@ -5,7 +5,7 @@ use crate::error::{McpError, Result, ToolError};
 use crate::protocol::{CallToolResult, Tool};
 use crate::tools::registry::ToolHandler;
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
@@ -88,6 +88,8 @@ impl ToolHandler for ListTablesTool {
 #[derive(Debug, Deserialize)]
 pub struct GetSchemaArgs {
     pub table_name: String,
+    #[serde(default)]
+    pub sample_rows: Option<u32>,
 }
 
 pub struct GetSchemaTool {
@@ -107,7 +109,8 @@ impl ToolHandler for GetSchemaTool {
             name: "get_schema".into(),
             description: Some(
                 "Get detailed schema information for a table including columns, \
-                data types, constraints, and indexes. \
+                data types, constraints, and indexes. Optionally include a few \
+                sample rows to see how the table is actually used. \
                 Requires an active database connection."
                     .into(),
             ),
@@ -117,6 +120,12 @@ impl ToolHandler for GetSchemaTool {
                     "table_name": {
                         "type": "string",
                         "description": "Table name (can include schema prefix, e.g., 'public.users')"
+                    },
+                    "sample_rows": {
+                        "type": "integer",
+                        "description": "Include the first N rows of the table in the response (executes a SELECT). Omit to return structure only.",
+                        "minimum": 1,
+                        "maximum": 100
                     }
                 },
                 "required": ["table_name"]
@@ -139,8 +148,36 @@ impl ToolHandler for GetSchemaTool {
             .await
             .map_err(McpError::from)?;
 
-        Ok(CallToolResult::json(&schema))
+        // Schema and table names were identifier-validated by the driver, so
+        // interpolating them here is safe.
+        let sample_rows = match args.sample_rows {
+            Some(n) if n > 0 => {
+                let query = format!(
+                    "SELECT * FROM {}",
+                    driver.quote_qualified(&schema.schema, &schema.name)
+                );
+                let result = driver
+                    .execute_query(&query, Some(n.min(100)))
+                    .await
+                    .map_err(McpError::from)?;
+                Some(result.rows)
+            }
+            _ => None,
+        };
+
+        Ok(CallToolResult::json(&GetSchemaOutput {
+            schema,
+            sample_rows,
+        }))
     }
+}
+
+#[derive(Debug, Serialize)]
+struct GetSchemaOutput {
+    #[serde(flatten)]
+    schema: crate::database::TableSchema,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_rows: Option<Vec<std::collections::HashMap<String, crate::database::CellValue>>>,
 }
 
 #[derive(Debug, Deserialize)]

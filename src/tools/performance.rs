@@ -14,6 +14,8 @@ use tracing::instrument;
 #[derive(Debug, Deserialize)]
 pub struct AnalyzeQueryArgs {
     pub query: String,
+    #[serde(default)]
+    pub actual: bool,
 }
 
 pub struct AnalyzeQueryTool {
@@ -36,9 +38,10 @@ impl ToolHandler for AnalyzeQueryTool {
         Tool {
             name: "analyze_query".into(),
             description: Some(
-                "Analyze a SQL query's execution plan without running it. \
-                Shows estimated costs, row counts, and operations. \
-                Requires an active database connection."
+                "Analyze a SQL query's execution plan. By default the plan is \
+                estimated without running the query. Set actual=true to execute \
+                the query and include real row counts next to the estimates \
+                (MSSQL only). Requires an active database connection."
                     .into(),
             ),
             input_schema: serde_json::json!({
@@ -47,6 +50,10 @@ impl ToolHandler for AnalyzeQueryTool {
                     "query": {
                         "type": "string",
                         "description": "The SQL query to analyze (SELECT only)"
+                    },
+                    "actual": {
+                        "type": "boolean",
+                        "description": "Execute the query and report actual row counts alongside estimates (default: false). Use with care on heavy queries."
                     }
                 },
                 "required": ["query"]
@@ -69,10 +76,12 @@ impl ToolHandler for AnalyzeQueryTool {
             .validate(&args.query)
             .map_err(McpError::from)?;
 
-        let plan = driver
-            .get_execution_plan(&args.query)
-            .await
-            .map_err(McpError::from)?;
+        let plan = if args.actual {
+            driver.get_execution_plan_actual(&args.query).await
+        } else {
+            driver.get_execution_plan(&args.query).await
+        }
+        .map_err(McpError::from)?;
 
         Ok(CallToolResult::json(&plan))
     }
