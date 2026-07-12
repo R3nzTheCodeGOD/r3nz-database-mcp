@@ -71,8 +71,10 @@ static INJECTION_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)BENCHMARK\s*\(").expect("Invalid regex: BENCHMARK pattern"),
         Regex::new(r"(?i)SLEEP\s*\(").expect("Invalid regex: SLEEP pattern"),
         Regex::new(r"(?i)WAITFOR\s+DELAY").expect("Invalid regex: WAITFOR DELAY pattern"),
-        Regex::new(r"(?i)0x[0-9a-fA-F]+").expect("Invalid regex: hex string pattern"),
-        Regex::new(r"(?i)CHAR\s*\(\s*\d+\s*\)").expect("Invalid regex: CHAR function pattern"),
+        // NOTE: hex literals (0x...) and CHAR(n) are deliberately NOT flagged.
+        // In a SELECT-only tool they are plain data, while blocking them broke
+        // legitimate queries such as `CAST(col AS varchar(10))` (substring
+        // match on "char(10)") and varbinary comparisons (`WHERE hash = 0x4D`).
     ]
 });
 
